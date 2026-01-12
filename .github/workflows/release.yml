@@ -13,39 +13,46 @@ jobs:
       - name: 拉取代码（完整历史）
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 避免Electron Builder缺失版本信息
+          fetch-depth: 0
 
-      - name: 配置Node.js + 国内镜像（加速依赖安装）
+      - name: 配置Node.js + 国内镜像
         uses: actions/setup-node@v4
         with:
           node-version: 18
           cache: 'yarn'
           registry-url: https://registry.npmmirror.com/
 
-      - name: 安装依赖（验证chalk是否安装）
+      - name: 安装依赖（修复PowerShell语法验证chalk）
         run: |
-          # 清理缓存+重装依赖，避免缓存污染
+          # 清理缓存+重装依赖（PowerShell原生语法）
           yarn cache clean
           yarn install --frozen-lockfile
-          # 验证chalk是否安装成功（提前发现问题）
-          Write-Host "=== 验证chalk依赖 ==="
-          node -e "require('chalk'); Write-Host '✅ chalk安装成功'" 2>&1 || (Write-Host '❌ chalk安装失败'; exit 1)
 
-      - name: 分步执行构建（精准定位失败环节）
+          # 修复：PowerShell原生方式验证chalk依赖
+          Write-Host "=== 验证chalk依赖 ==="
+          try {
+              # PowerShell中执行node命令，捕获异常
+              node -e "require('chalk')"
+              Write-Host "✅ chalk安装成功"
+          } catch {
+              Write-Host "❌ chalk安装失败：$_"
+              exit 1  # 验证失败则终止流程
+          }
+
+      - name: 分步执行构建
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 修复TOKEN大小写（关键）
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 确保大写，权限正常
           ELECTRON_BUILDER_PLATFORM: win32
         run: |
           Write-Host "=== 第一步：执行build.js脚本 ==="
-          # 单独执行build.js，输出详细错误
-          node scripts/build.js 2>&1
+          node scripts/build.js
           if ($LASTEXITCODE -ne 0) {
               Write-Host "❌ build.js执行失败，退出码：$LASTEXITCODE"
               exit $LASTEXITCODE
           }
 
           Write-Host "=== 第二步：执行electron-builder打包 ==="
-          electron-builder --publish always --win --x64 2>&1
+          electron-builder --publish always --win --x64
           if ($LASTEXITCODE -ne 0) {
               Write-Host "❌ electron-builder打包失败，退出码：$LASTEXITCODE"
               exit $LASTEXITCODE
@@ -54,16 +61,23 @@ jobs:
       - name: 检查产物目录
         run: |
           Write-Host "=== 构建产物目录检查 ==="
-          if (Test-Path "dist") { Get-ChildItem "dist" -Recurse } else { Write-Host "⚠️ dist目录不存在" }
-          if (Test-Path "release") { Get-ChildItem "release" -Recurse } else { Write-Host "⚠️ release目录不存在" }
+          if (Test-Path "dist") {
+              Get-ChildItem "dist" -Recurse
+          } else {
+              Write-Host "⚠️ dist目录不存在"
+          }
+          if (Test-Path "release") {
+              Get-ChildItem "release" -Recurse
+          } else {
+              Write-Host "⚠️ release目录不存在"
+          }
 
-      - name: 上传产物/日志（失败也上传，方便排查）
+      - name: 上传产物/日志（失败也上传）
         uses: actions/upload-artifact@v4
-        if: always()  # 无论成功/失败都执行
+        if: always()
         with:
           name: douyu-keep-build-${{ github.ref_name }}
           path: |
             dist/**/*
             release/**/*
-            node_modules/**/*.log  # 上传日志文件
           retention-days: 7
