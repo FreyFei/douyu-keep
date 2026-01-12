@@ -1,65 +1,63 @@
-name: Build/release
+name: Build/release (Windows)
 
 on:
   push:
     tags:
-      - 'V*.*.*'  # 推送V开头标签时触发
-  workflow_dispatch:  # 保留手动触发（可选，方便测试）
+      - 'V*.*.*'  # 推送V开头标签触发
+  workflow_dispatch:  # 支持手动触发
 
 jobs:
   release:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [windows-2022]
-    timeout-minutes: 40  # 多平台构建耗时更长，延长超时时间
+    runs-on: windows-2022  # 仅保留Windows 2022
+    timeout-minutes: 30    # Windows构建超时时间
 
     steps:
-      # 1. 修复Ubuntu Snapcraft安装条件（匹配matrix的ubuntu-latest）
-      - name: Install Snapcraft (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'  # 原条件是ubuntu-22.04，和matrix一致
-        run: |
-          sudo snap install snapcraft --classic
-
-      # 2. 拉取代码（完整历史，Electron Builder需要）
-      - name: Check out Git repository
-        uses: actions/checkout@v4  # 升级到最新版，更稳定
+      # 1. 拉取代码（完整历史，避免Electron版本信息缺失）
+      - name: Check out code
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 拉取完整提交记录，避免版本信息缺失
+          fetch-depth: 0
 
-      # 3. 配置Node.js + 缓存/镜像（提升构建稳定性）
-      - name: Install Node.js, NPM and Yarn
-        uses: actions/setup-node@v4  # 升级到最新版
+      # 2. 配置Node.js + 国内镜像（加速依赖安装）
+      - name: Set up Node.js & Yarn
+        uses: actions/setup-node@v4
         with:
           node-version: 18
-          cache: 'yarn'  # 缓存yarn依赖，加速构建
-          registry-url: https://registry.npmmirror.com/  # 国内镜像，避免依赖下载失败
+          cache: 'yarn'  # 缓存依赖，减少重复下载
+          registry-url: https://registry.npmmirror.com/
 
-      # 4. 安装依赖（优化稳定性）
+      # 3. 安装依赖（PowerShell原生语法）
       - name: Install dependencies
         run: |
           yarn cache clean
-          yarn install  # 移除--frozen-lockfile，避免lockfile不匹配报错
+          yarn install
+          # 验证yarn安装结果
+          Write-Host "✅ 依赖安装完成，当前yarn版本：$(yarn --version)"
+        shell: pwsh
 
-      # 5. 构建+发布到Releases（核心：修复Token + 适配多平台）
-      - name: Build/release Electron app
+      # 4. 构建+发布到Releases（核心步骤）
+      - name: Build & publish to GitHub Releases
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 关键修复：改为大写，获取发布权限
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 大写确保发布权限
+          ELECTRON_BUILDER_PLATFORM: win32       # 强制Windows平台
+          ELECTRON_BUILDER_ARCH: x64             # 强制64位构建
         run: |
-          # 执行构建并强制发布到Releases（--publish always）
+          # 执行构建并发布到Releases
           yarn build --publish always
-          # 打印产物目录（验证是否生成）
-          if [[ "${{ matrix.os }}" == "windows-2022" ]]; then
-            dir dist/ 2>nul || echo "dist目录不存在"
-          else
-            ls -la dist/ || echo "dist目录不存在"
-          fi
+          # PowerShell原生语法检查产物目录
+          Write-Host "=== 构建产物目录检查 ==="
+          if (Test-Path "dist") {
+              Get-ChildItem "dist" -Recurse  # 列出dist下所有文件
+          } else {
+              Write-Host "⚠️ dist目录不存在"
+          }
+        shell: pwsh
 
-      # 6. 兜底：上传Artifacts（即使Releases发布失败，也能下载产物）
+      # 5. 兜底：上传Artifacts（即使Releases发布失败也能下载）
       - name: Upload build artifacts (fallback)
         uses: actions/upload-artifact@v4
-        if: always()  # 无论构建/发布成功与否都执行
+        if: always()  # 无论成功/失败都执行
         with:
-          name: douyu-keep-${{ matrix.os }}-${{ github.ref_name }}
-          path: dist/**/*  # Electron Builder默认产物目录
+          name: douyu-keep-windows-${{ github.ref_name }}  # 产物名带版本
+          path: dist/**/*  # 上传所有构建产物
           retention-days: 30  # 产物保留30天
