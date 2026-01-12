@@ -11,7 +11,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [windows-latest]  # 明确指定 Windows 最新版本，更规范
+        os: [windows-2012]  # 明确指定 Windows 最新版本，更规范
 
     steps:
       # 1. 拉取代码（保留）
