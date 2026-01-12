@@ -3,43 +3,39 @@ name: Build/release
 on:
   push:
     tags:
-      - 'V*.*.*'
-  workflow_dispatch:  # 手动触发开关
+      - 'V*.*.*'  # 推送 Vx.x.x 格式标签时自动触发
+  workflow_dispatch:  # 保留手动触发开关
 
 jobs:
   release:
     runs-on: ${{ matrix.os }}
-
     strategy:
       matrix:
-        os: [windows]
+        os: [windows-latest]  # 明确指定 Windows 最新版本，更规范
 
     steps:
-      - name: Install Snapcraft
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo snap install snapcraft --classic
-
+      # 1. 拉取代码（保留）
       - name: Check out Git repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4  # 升级到最新版，更稳定
 
+      # 2. 安装 Node.js 环境（保留并优化）
       - name: Install Node.js, NPM and Yarn
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: 18
-      - name: Build/release Electron app
+          cache: 'yarn'  # 缓存 yarn 依赖，加速后续构建
+
+      # 3. 安装依赖 + 构建并发布到 GitHub Releases
+      - name: Build & publish Electron app to GitHub Releases
         env:
-          GH_TOKEN: ${{ secrets.github_token }}
+          # GitHub 内置 Token，默认拥有发布 Releases 的权限
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 可选：指定构建平台（Windows）
+          ELECTRON_BUILDER_PLATFORM: win32
         run: |
-          yarn install
+          # 安装项目依赖（确保 yarn.lock 存在，否则用 npm install）
+          yarn install --frozen-lockfile
+          # 执行构建并发布到 GitHub Releases
+          # --publish always：强制发布（即使已有同名 Release）
+          # electron-builder 会自动关联当前 tag，生成对应 Release
           yarn build --publish always
-          
-- name: Release
-  uses: softprops/action-gh-release@v1
-  if: startsWith(github.ref, 'refs/tags/')  # 仅打标签时触发
-  with:
-    files: |
-      dist/*.exe
-      dist/win-unpacked/*
-  env:
-    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # GitHub自动生成的Token，无需手动配置
