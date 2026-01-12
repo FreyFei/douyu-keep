@@ -3,61 +3,74 @@ name: Build/release (Windows)
 on:
   push:
     tags:
-      - 'V*.*.*'  # 推送V开头标签触发
-  workflow_dispatch:  # 支持手动触发
+      - 'V*.*.*'  # 仅匹配大写V开头的标签（如V1.0.0）
+  workflow_dispatch:
 
 jobs:
   release:
-    runs-on: windows-2022  # 仅保留Windows 2022
-    timeout-minutes: 30    # Windows构建超时时间
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:  # 显式声明权限（关键：解决GH_TOKEN权限不足）
+      contents: write  # 必须！授予发布Releases的权限
+      packages: write
 
     steps:
-      # 1. 拉取代码（完整历史，避免Electron版本信息缺失）
       - name: Check out code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # 拉取完整提交记录（Electron Builder需要）
 
-      # 2. 配置Node.js + 国内镜像（加速依赖安装）
       - name: Set up Node.js & Yarn
         uses: actions/setup-node@v4
         with:
           node-version: 18
-          cache: 'yarn'  # 缓存依赖，减少重复下载
+          cache: 'yarn'
           registry-url: https://registry.npmmirror.com/
 
-      # 3. 安装依赖（PowerShell原生语法）
       - name: Install dependencies
         run: |
           yarn cache clean
           yarn install
-          # 验证yarn安装结果
-          Write-Host "✅ 依赖安装完成，当前yarn版本：$(yarn --version)"
+          Write-Host "✅ 依赖安装完成"
         shell: pwsh
 
-      # 4. 构建+发布到Releases（核心步骤）
-      - name: Build & publish to GitHub Releases
+      # 核心：构建+输出详细日志（排查发布失败原因）
+      - name: Build Electron app (详细日志)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 大写确保发布权限
-          ELECTRON_BUILDER_PLATFORM: win32       # 强制Windows平台
-          ELECTRON_BUILDER_ARCH: x64             # 强制64位构建
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ELECTRON_BUILDER_PLATFORM: win32
+          ELECTRON_BUILDER_ARCH: x64
+          DEBUG: electron-builder  # 开启Electron Builder调试日志（关键）
         run: |
-          # 执行构建并发布到Releases
-          yarn build --publish always
-          # PowerShell原生语法检查产物目录
-          Write-Host "=== 构建产物目录检查 ==="
-          if (Test-Path "dist") {
-              Get-ChildItem "dist" -Recurse  # 列出dist下所有文件
-          } else {
-              Write-Host "⚠️ dist目录不存在"
+          # 执行构建，输出完整日志
+          Write-Host "=== 开始构建并发布到Releases ==="
+          yarn build --publish always 2>&1
+          # 检查构建退出码
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "❌ 构建/发布失败，退出码：$LASTEXITCODE"
+              exit $LASTEXITCODE
           }
+          # 验证产物是否生成（必须有产物才能发布）
+          Write-Host "=== 验证构建产物 ==="
+          if (-not (Test-Path "dist")) {
+              Write-Host "❌ dist目录不存在，无产物可发布"
+              exit 1
+          }
+          # 列出dist目录所有文件（确认有.exe/.zip等产物）
+          Get-ChildItem "dist" -Recurse
         shell: pwsh
 
-      # 5. 兜底：上传Artifacts（即使Releases发布失败也能下载）
-      - name: Upload build artifacts (fallback)
-        uses: actions/upload-artifact@v4
-        if: always()  # 无论成功/失败都执行
+      # 兜底：如果Electron Builder自动发布失败，手动上传产物到Releases
+      - name: Manual upload to Releases (兜底)
+        uses: softprops/action-gh-release@v2  # 官方推荐的Releases上传Action
+        if: always()  # 即使自动发布失败，也执行
         with:
-          name: douyu-keep-windows-${{ github.ref_name }}  # 产物名带版本
-          path: dist/**/*  # 上传所有构建产物
-          retention-days: 30  # 产物保留30天
+          files: |
+            dist/*.exe
+            dist/*.zip
+            dist/*.msi
+          tag_name: ${{ github.ref_name }}  # 匹配推送的标签（如V1.0.0）
+          name: Release ${{ github.ref_name }}  # Releases名称
+          body: "Windows平台自动构建产物"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
