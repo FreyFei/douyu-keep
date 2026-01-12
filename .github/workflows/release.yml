@@ -11,7 +11,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [windows-2022]
+        os: [macOS-15, windows-2022, ubuntu-latest]
     timeout-minutes: 40  # 多平台构建耗时更长，延长超时时间
 
     steps:
@@ -45,12 +45,6 @@ jobs:
       - name: Build/release Electron app
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 关键修复：改为大写，获取发布权限
-          # 按系统指定构建平台，确保Electron Builder正确打包
-          ELECTRON_BUILDER_PLATFORM: ${{ 
-            matrix.os == 'macOS-15' && 'darwin' || 
-            matrix.os == 'windows-2022' && 'win32' || 
-            matrix.os == 'ubuntu-latest' && 'linux' 
-          }}
         run: |
           # 执行构建并强制发布到Releases（--publish always）
           yarn build --publish always
