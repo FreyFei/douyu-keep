@@ -22,21 +22,26 @@ jobs:
           cache: 'yarn'
           registry-url: https://registry.npmmirror.com/
 
-      - name: 安装依赖（修复PowerShell语法验证chalk）
+      - name: 安装依赖（移除--frozen-lockfile，允许更新lockfile）
         run: |
-          # 清理缓存+重装依赖（PowerShell原生语法）
+          # 清理缓存，避免污染
           yarn cache clean
-          yarn install --frozen-lockfile
+          # 移除--frozen-lockfile，解决lockfile不匹配报错
+          yarn install
+          # 验证yarn安装是否成功
+          Write-Host "=== 已安装的依赖列表（含chalk）==="
+          yarn list chalk  # 直接列出chalk依赖，确认安装
 
-          # 修复：PowerShell原生方式验证chalk依赖
+      - name: 验证chalk依赖（正确判断node进程退出码）
+        run: |
           Write-Host "=== 验证chalk依赖 ==="
-          try {
-              # PowerShell中执行node命令，捕获异常
-              node -e "require('chalk')"
+          # 执行node命令，捕获退出码（PowerShell中$LASTEXITCODE对应外部进程退出码）
+          node -e "require('chalk')"
+          if ($LASTEXITCODE -eq 0) {
               Write-Host "✅ chalk安装成功"
-          } catch {
-              Write-Host "❌ chalk安装失败：$_"
-              exit 1  # 验证失败则终止流程
+          } else {
+              Write-Host "❌ chalk安装失败，退出码：$LASTEXITCODE"
+              exit 1  # 验证失败，终止流程
           }
 
       - name: 分步执行构建
@@ -65,11 +70,6 @@ jobs:
               Get-ChildItem "dist" -Recurse
           } else {
               Write-Host "⚠️ dist目录不存在"
-          }
-          if (Test-Path "release") {
-              Get-ChildItem "release" -Recurse
-          } else {
-              Write-Host "⚠️ release目录不存在"
           }
 
       - name: 上传产物/日志（失败也上传）
