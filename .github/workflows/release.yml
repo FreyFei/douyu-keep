@@ -1,9 +1,7 @@
 name: Build/release
-
 on:
   push:
-    tags:
-      - 'V*.*.*'
+    tags: ['V*.*.*']
   workflow_dispatch:
 
 jobs:
@@ -13,8 +11,7 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        with: fetch-depth: 0
 
       - name: Set up Node.js & Yarn
         uses: actions/setup-node@v4
@@ -23,46 +20,59 @@ jobs:
           cache: 'yarn'
           registry-url: https://registry.npmmirror.com/
 
-      - name: 🔍 检查依赖配置（排障用）
+      - name: 🧹 清理缓存 + 重装依赖（解决chalk等依赖缺失）
         run: |
-          # 打印package.json中的依赖（确认chalk已声明）
-          cat package.json | findstr "chalk" || echo "chalk未在package.json中声明"
-          # 打印yarn版本和node版本
-          yarn --version
-          node --version
-
-      - name: Install dependencies（强制重装，避免缓存问题）
-        run: |
-          # 清除yarn缓存（防止缓存污染）
+          # 清除yarn缓存，避免缓存污染
           yarn cache clean
-          # 安装所有依赖（包括新添加的chalk），不锁定lockfile（先确保依赖装全）
-          yarn install
-          # 验证chalk是否安装成功
-          echo "=== 验证chalk模块 ==="
-          node -e "require('chalk'); console.log('chalk安装成功')" || echo "chalk安装失败"
+          # 严格按lockfile安装依赖（确保CI和本地一致）
+          yarn install --frozen-lockfile
+          # 验证chalk是否安装成功（核心依赖）
+          Write-Host "=== 验证chalk模块 ==="
+          node -e "require('chalk'); console.log('✅ chalk安装成功')" 2>&1 || (Write-Host "❌ chalk安装失败"; exit 1)
 
-      - name: Build Electron app & publish to Releases
+      - name: 📝 分步执行构建（精准定位失败环节）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ELECTRON_BUILDER_PLATFORM: win32
-          ELECTRON_BUILDER_ARCH: x64
         run: |
-          # 先执行build脚本，捕获详细日志
-          yarn build --publish always
-          # 打印产物目录（确认是否生成）
-          echo "=== 构建产物目录列表 ==="
-          if (Test-Path dist/) { dir dist/ } else { echo "dist目录不存在" }
-          if (Test-Path release/) { dir release/ } else { echo "release目录不存在" }
-          echo "=== 构建产物列表结束 ==="
+          Write-Host "=== 第一步：执行build.js脚本 ==="
+          # 单独执行build.js，捕获完整错误日志
+          node scripts/build.js 2>&1
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "❌ build.js执行失败，退出码：$LASTEXITCODE"
+              exit $LASTEXITCODE
+          }
 
-      - name: Upload build artifacts
+          Write-Host "=== 第二步：执行electron-builder打包 ==="
+          # 单独执行打包，指定Windows平台/64位架构
+          electron-builder --publish always --win --x64 2>&1
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "❌ electron-builder打包失败，退出码：$LASTEXITCODE"
+              exit $LASTEXITCODE
+          }
+
+      - name: 📂 检查构建产物（PowerShell兼容）
+        run: |
+          Write-Host "=== 构建产物目录列表 ==="
+          # 检查dist目录
+          if (Test-Path -Path "dist" -PathType Container) { 
+              Get-ChildItem -Path "dist" -Recurse; 
+          } else { 
+              Write-Host "⚠️ dist目录不存在"; 
+          }
+          # 额外检查electron-builder常见产物目录
+          if (Test-Path -Path "release" -PathType Container) { 
+              Get-ChildItem -Path "release" -Recurse; 
+          } else { 
+              Write-Host "⚠️ release目录不存在"; 
+          }
+
+      - name: 📤 上传产物/日志（失败也上传，方便排障）
         uses: actions/upload-artifact@v4
-        if: success() || failure()  # 即使构建失败，也上传日志（方便排障）
+        if: always()
         with:
-          name: douyu-keep-windows-build-${{ github.ref_name }}
+          name: build-logs-${{ github.sha }}
           path: |
             dist/**/*
             release/**/*
-            !**/node_modules/
-          retention-days: 30
-          if-no-files-found: warn
+            node_modules/**/*.log
+          retention-days: 7
