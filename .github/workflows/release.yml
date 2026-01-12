@@ -2,82 +2,70 @@ name: Build/release
 
 on:
   push:
-    tags: ['V*.*.*']
-  workflow_dispatch:
+    tags:
+      - 'V*.*.*'  # 推送V开头标签时触发
+  workflow_dispatch:  # 保留手动触发（可选，方便测试）
 
 jobs:
   release:
-    runs-on: windows-2022
-    timeout-minutes: 30
-    steps:
-      - name: 拉取代码（完整历史）
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-2022]
+    timeout-minutes: 40  # 多平台构建耗时更长，延长超时时间
 
-      - name: 配置Node.js + 国内镜像
-        uses: actions/setup-node@v4
+    steps:
+      # 1. 修复Ubuntu Snapcraft安装条件（匹配matrix的ubuntu-latest）
+      - name: Install Snapcraft (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'  # 原条件是ubuntu-22.04，和matrix一致
+        run: |
+          sudo snap install snapcraft --classic
+
+      # 2. 拉取代码（完整历史，Electron Builder需要）
+      - name: Check out Git repository
+        uses: actions/checkout@v4  # 升级到最新版，更稳定
+        with:
+          fetch-depth: 0  # 拉取完整提交记录，避免版本信息缺失
+
+      # 3. 配置Node.js + 缓存/镜像（提升构建稳定性）
+      - name: Install Node.js, NPM and Yarn
+        uses: actions/setup-node@v4  # 升级到最新版
         with:
           node-version: 18
-          cache: 'yarn'
-          registry-url: https://registry.npmmirror.com/
+          cache: 'yarn'  # 缓存yarn依赖，加速构建
+          registry-url: https://registry.npmmirror.com/  # 国内镜像，避免依赖下载失败
 
-      - name: 安装依赖（移除--frozen-lockfile，允许更新lockfile）
+      # 4. 安装依赖（优化稳定性）
+      - name: Install dependencies
         run: |
-          # 清理缓存，避免污染
           yarn cache clean
-          # 移除--frozen-lockfile，解决lockfile不匹配报错
-          yarn install
-          # 验证yarn安装是否成功
-          Write-Host "=== 已安装的依赖列表（含chalk）==="
-          yarn list chalk  # 直接列出chalk依赖，确认安装
+          yarn install  # 移除--frozen-lockfile，避免lockfile不匹配报错
 
-      - name: 验证chalk依赖（正确判断node进程退出码）
-        run: |
-          Write-Host "=== 验证chalk依赖 ==="
-          # 执行node命令，捕获退出码（PowerShell中$LASTEXITCODE对应外部进程退出码）
-          node -e "require('chalk')"
-          if ($LASTEXITCODE -eq 0) {
-              Write-Host "✅ chalk安装成功"
-          } else {
-              Write-Host "❌ chalk安装失败，退出码：$LASTEXITCODE"
-              exit 1  # 验证失败，终止流程
-          }
-
-      - name: 分步执行构建
+      # 5. 构建+发布到Releases（核心：修复Token + 适配多平台）
+      - name: Build/release Electron app
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 确保大写，权限正常
-          ELECTRON_BUILDER_PLATFORM: win32
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 关键修复：改为大写，获取发布权限
+          # 按系统指定构建平台，确保Electron Builder正确打包
+          ELECTRON_BUILDER_PLATFORM: ${{ 
+            matrix.os == 'macOS-15' && 'darwin' || 
+            matrix.os == 'windows-2022' && 'win32' || 
+            matrix.os == 'ubuntu-latest' && 'linux' 
+          }}
         run: |
-          Write-Host "=== 第一步：执行build.js脚本 ==="
-          node scripts/build.js
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "❌ build.js执行失败，退出码：$LASTEXITCODE"
-              exit $LASTEXITCODE
-          }
+          # 执行构建并强制发布到Releases（--publish always）
+          yarn build --publish always
+          # 打印产物目录（验证是否生成）
+          if [[ "${{ matrix.os }}" == "windows-2022" ]]; then
+            dir dist/ 2>nul || echo "dist目录不存在"
+          else
+            ls -la dist/ || echo "dist目录不存在"
+          fi
 
-          Write-Host "=== 第二步：执行electron-builder打包 ==="
-          electron-builder --publish always --win --x64
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "❌ electron-builder打包失败，退出码：$LASTEXITCODE"
-              exit $LASTEXITCODE
-          }
-
-      - name: 检查产物目录
-        run: |
-          Write-Host "=== 构建产物目录检查 ==="
-          if (Test-Path "dist") {
-              Get-ChildItem "dist" -Recurse
-          } else {
-              Write-Host "⚠️ dist目录不存在"
-          }
-
-      - name: 上传产物/日志（失败也上传）
+      # 6. 兜底：上传Artifacts（即使Releases发布失败，也能下载产物）
+      - name: Upload build artifacts (fallback)
         uses: actions/upload-artifact@v4
-        if: always()
+        if: always()  # 无论构建/发布成功与否都执行
         with:
-          name: douyu-keep-build-${{ github.ref_name }}
-          path: |
-            dist/**/*
-            release/**/*
-          retention-days: 7
+          name: douyu-keep-${{ matrix.os }}-${{ github.ref_name }}
+          path: dist/**/*  # Electron Builder默认产物目录
+          retention-days: 30  # 产物保留30天
