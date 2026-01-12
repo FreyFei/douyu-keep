@@ -3,49 +3,54 @@ name: Build/release
 on:
   push:
     tags:
-      - 'V*.*.*'
-  workflow_dispatch:
+      - 'V*.*.*'  # 仅匹配大写V开头的Tag（如V1.0.0）
+  workflow_dispatch:  # 支持手动触发
 
 jobs:
   release:
-    runs-on: ${{ matrix.os }}
-
-    strategy:
-      matrix:
-        os: [windows-2022]
-
+    runs-on: windows-2022  # 精简matrix（仅Windows），也可保留matrix: os: [windows-2022]
+    timeout-minutes: 30  # 防止构建卡死，超时终止
     steps:
-      - name: Install Snapcraft
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo snap install snapcraft --classic
-
-      - name: Check out Git repository
-        uses: actions/checkout@v3
-
-      - name: Install Node.js, NPM and Yarn
-        uses: actions/setup-node@v3
+      - name: Check out code
+        uses: actions/checkout@v4  # 升级最新版Action
         with:
-          node-version: 18
-      - name: Build/release Electron app
+          fetch-depth: 0  # 拉取完整提交记录（Electron Builder可能需要）
+
+      - name: Set up Node.js & Yarn
+        uses: actions/setup-node@v4  # 升级最新版Action
+        with:
+          node-version: 18  # 固定Node版本（匹配Electron兼容版本）
+          cache: 'yarn'  # 缓存yarn依赖，加速构建
+          registry-url: https://registry.npmmirror.com/  # 国内镜像，避免依赖下载失败
+
+      - name: Install dependencies
+        run: |
+          yarn install --frozen-lockfile  # 锁定依赖版本，避免构建不一致
+          yarn --version  # 输出yarn版本，方便排查
+          node --version  # 输出node版本，方便排查
+
+      - name: Build Electron app & publish to Releases
         env:
-          GH_TOKEN: ${{ secrets.github_token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 修正大小写（GITHUB_TOKEN是官方默认变量）
+          ELECTRON_BUILDER_PLATFORM: win32  # 强制指定Windows平台
+          ELECTRON_BUILDER_ARCH: x64  # 强制64位构建
         run: |
-          yarn install
+          # 先执行build，输出构建日志（关键：排查产物是否生成）
           yarn build --publish always
-      # 放在 Build & publish 步骤之后（或构建步骤之后）
-      - name: Upload Electron build artifacts
-        uses: actions/upload-artifact@v4  # 官方上传 Action（v4 是最新稳定版）
+          # 打印产物目录（核心：确认dist/release是否有文件）
+          echo "=== 构建产物目录列表 ==="
+          dir dist/ 2>nul || echo "dist目录不存在"
+          dir release/ 2>nul || echo "release目录不存在"
+          echo "=== 构建产物列表结束 ==="
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
         with:
-          # 1. 自定义 Artifacts 名称（区分系统/版本）
-          name: douyu-keep-windows-build
-          # 2. 要上传的路径（Electron 构建产物通常在 dist/ 目录）
-          # 支持格式：单目录、多目录、通配符、排除文件
+          name: douyu-keep-windows-build-${{ github.ref_name }}  # 带版本号的产物名（如douyu-keep-windows-build-V1.0.0）
+          # 覆盖Electron Builder常见输出目录（dist/ + release/），避免路径错漏
           path: |
-            dist/  # 上传 dist 目录下所有文件（含子目录）
-            # 可选：指定单个文件，如 dist/*.exe
-            # 可选：排除文件，如 !dist/unwanted/*（v4 需配合通配符）
-          # 3. 保留天数（可选，默认 90 天，按需缩短）
-          retention-days: 30
-          # 4. 无文件时仅警告（避免构建失败但无产物时中断流程）
-          if-no-files-found: warn
+            dist/**/*          # 匹配dist下所有文件（含子目录）
+            release/**/*       # 匹配release下所有文件（Electron Builder部分配置会输出到release）
+            !**/node_modules/  # 排除无用的node_modules，减小产物体积
+          retention-days: 30  # 产物保留30天（按需调整）
+          if-no-files-found: warn  # 无文件仅警告，不中断流程（方便排查）
