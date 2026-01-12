@@ -1,78 +1,50 @@
 name: Build/release
+
 on:
   push:
-    tags: ['V*.*.*']
+    tags:
+      - 'V*.*.*'
   workflow_dispatch:
 
 jobs:
   release:
-    runs-on: windows-2022
-    timeout-minutes: 30
-    steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-        with: fetch-depth: 0
+    runs-on: ${{ matrix.os }}
 
-      - name: Set up Node.js & Yarn
-        uses: actions/setup-node@v4
+    strategy:
+      matrix:
+        os: [windows-2022]
+
+    steps:
+      - name: Install Snapcraft
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo snap install snapcraft --classic
+
+      - name: Check out Git repository
+        uses: actions/checkout@v3
+
+      - name: Install Node.js, NPM and Yarn
+        uses: actions/setup-node@v3
         with:
           node-version: 18
-          cache: 'yarn'
-          registry-url: https://registry.npmmirror.com/
-
-      - name: 🧹 清理缓存 + 重装依赖（解决chalk等依赖缺失）
-        run: |
-          # 清除yarn缓存，避免缓存污染
-          yarn cache clean
-          # 严格按lockfile安装依赖（确保CI和本地一致）
-          yarn install --frozen-lockfile
-          # 验证chalk是否安装成功（核心依赖）
-          Write-Host "=== 验证chalk模块 ==="
-          node -e "require('chalk'); console.log('✅ chalk安装成功')" 2>&1 || (Write-Host "❌ chalk安装失败"; exit 1)
-
-      - name: 📝 分步执行构建（精准定位失败环节）
+      - name: Build/release Electron app
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.github_token }}
         run: |
-          Write-Host "=== 第一步：执行build.js脚本 ==="
-          # 单独执行build.js，捕获完整错误日志
-          node scripts/build.js 2>&1
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "❌ build.js执行失败，退出码：$LASTEXITCODE"
-              exit $LASTEXITCODE
-          }
-
-          Write-Host "=== 第二步：执行electron-builder打包 ==="
-          # 单独执行打包，指定Windows平台/64位架构
-          electron-builder --publish always --win --x64 2>&1
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "❌ electron-builder打包失败，退出码：$LASTEXITCODE"
-              exit $LASTEXITCODE
-          }
-
-      - name: 📂 检查构建产物（PowerShell兼容）
-        run: |
-          Write-Host "=== 构建产物目录列表 ==="
-          # 检查dist目录
-          if (Test-Path -Path "dist" -PathType Container) { 
-              Get-ChildItem -Path "dist" -Recurse; 
-          } else { 
-              Write-Host "⚠️ dist目录不存在"; 
-          }
-          # 额外检查electron-builder常见产物目录
-          if (Test-Path -Path "release" -PathType Container) { 
-              Get-ChildItem -Path "release" -Recurse; 
-          } else { 
-              Write-Host "⚠️ release目录不存在"; 
-          }
-
-      - name: 📤 上传产物/日志（失败也上传，方便排障）
-        uses: actions/upload-artifact@v4
-        if: always()
+          yarn install
+          yarn build --publish always
+      # 放在 Build & publish 步骤之后（或构建步骤之后）
+      - name: Upload Electron build artifacts
+        uses: actions/upload-artifact@v4  # 官方上传 Action（v4 是最新稳定版）
         with:
-          name: build-logs-${{ github.sha }}
+          # 1. 自定义 Artifacts 名称（区分系统/版本）
+          name: douyu-keep-windows-build
+          # 2. 要上传的路径（Electron 构建产物通常在 dist/ 目录）
+          # 支持格式：单目录、多目录、通配符、排除文件
           path: |
-            dist/**/*
-            release/**/*
-            node_modules/**/*.log
-          retention-days: 7
+            dist/  # 上传 dist 目录下所有文件（含子目录）
+            # 可选：指定单个文件，如 dist/*.exe
+            # 可选：排除文件，如 !dist/unwanted/*（v4 需配合通配符）
+          # 3. 保留天数（可选，默认 90 天，按需缩短）
+          retention-days: 30
+          # 4. 无文件时仅警告（避免构建失败但无产物时中断流程）
