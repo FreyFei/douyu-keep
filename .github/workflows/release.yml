@@ -11,7 +11,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [macOS-15, windows-2022, ubuntu-latest]
+        os: [windows-2022]
     timeout-minutes: 40  # 多平台构建耗时更长，延长超时时间
 
     steps:
