@@ -12,7 +12,7 @@ jobs:
 
     strategy:
       matrix:
-        os: [windows-2012]
+        os: [windows-2022]
 
     steps:
       - name: Install Snapcraft
