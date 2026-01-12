@@ -3,54 +3,66 @@ name: Build/release
 on:
   push:
     tags:
-      - 'V*.*.*'  # 仅匹配大写V开头的Tag（如V1.0.0）
-  workflow_dispatch:  # 支持手动触发
+      - 'V*.*.*'
+  workflow_dispatch:
 
 jobs:
   release:
-    runs-on: windows-2022  # 精简matrix（仅Windows），也可保留matrix: os: [windows-2022]
-    timeout-minutes: 30  # 防止构建卡死，超时终止
+    runs-on: windows-2022
+    timeout-minutes: 30
     steps:
       - name: Check out code
-        uses: actions/checkout@v4  # 升级最新版Action
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 拉取完整提交记录（Electron Builder可能需要）
+          fetch-depth: 0
 
       - name: Set up Node.js & Yarn
-        uses: actions/setup-node@v4  # 升级最新版Action
+        uses: actions/setup-node@v4
         with:
-          node-version: 18  # 固定Node版本（匹配Electron兼容版本）
-          cache: 'yarn'  # 缓存yarn依赖，加速构建
-          registry-url: https://registry.npmmirror.com/  # 国内镜像，避免依赖下载失败
+          node-version: 18
+          cache: 'yarn'
+          registry-url: https://registry.npmmirror.com/
 
-      - name: Install dependencies
+      - name: 🔍 检查依赖配置（排障用）
         run: |
-          yarn install --frozen-lockfile  # 锁定依赖版本，避免构建不一致
-          yarn --version  # 输出yarn版本，方便排查
-          node --version  # 输出node版本，方便排查
+          # 打印package.json中的依赖（确认chalk已声明）
+          cat package.json | findstr "chalk" || echo "chalk未在package.json中声明"
+          # 打印yarn版本和node版本
+          yarn --version
+          node --version
+
+      - name: Install dependencies（强制重装，避免缓存问题）
+        run: |
+          # 清除yarn缓存（防止缓存污染）
+          yarn cache clean
+          # 安装所有依赖（包括新添加的chalk），不锁定lockfile（先确保依赖装全）
+          yarn install
+          # 验证chalk是否安装成功
+          echo "=== 验证chalk模块 ==="
+          node -e "require('chalk'); console.log('chalk安装成功')" || echo "chalk安装失败"
 
       - name: Build Electron app & publish to Releases
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 修正大小写（GITHUB_TOKEN是官方默认变量）
-          ELECTRON_BUILDER_PLATFORM: win32  # 强制指定Windows平台
-          ELECTRON_BUILDER_ARCH: x64  # 强制64位构建
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ELECTRON_BUILDER_PLATFORM: win32
+          ELECTRON_BUILDER_ARCH: x64
         run: |
-          # 先执行build，输出构建日志（关键：排查产物是否生成）
+          # 先执行build脚本，捕获详细日志
           yarn build --publish always
-          # 打印产物目录（核心：确认dist/release是否有文件）
+          # 打印产物目录（确认是否生成）
           echo "=== 构建产物目录列表 ==="
-          dir dist/ 2>nul || echo "dist目录不存在"
-          dir release/ 2>nul || echo "release目录不存在"
+          if (Test-Path dist/) { dir dist/ } else { echo "dist目录不存在" }
+          if (Test-Path release/) { dir release/ } else { echo "release目录不存在" }
           echo "=== 构建产物列表结束 ==="
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
+        if: success() || failure()  # 即使构建失败，也上传日志（方便排障）
         with:
-          name: douyu-keep-windows-build-${{ github.ref_name }}  # 带版本号的产物名（如douyu-keep-windows-build-V1.0.0）
-          # 覆盖Electron Builder常见输出目录（dist/ + release/），避免路径错漏
+          name: douyu-keep-windows-build-${{ github.ref_name }}
           path: |
-            dist/**/*          # 匹配dist下所有文件（含子目录）
-            release/**/*       # 匹配release下所有文件（Electron Builder部分配置会输出到release）
-            !**/node_modules/  # 排除无用的node_modules，减小产物体积
-          retention-days: 30  # 产物保留30天（按需调整）
-          if-no-files-found: warn  # 无文件仅警告，不中断流程（方便排查）
+            dist/**/*
+            release/**/*
+            !**/node_modules/
+          retention-days: 30
+          if-no-files-found: warn
