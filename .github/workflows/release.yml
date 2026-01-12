@@ -2,60 +2,68 @@ name: Build/release
 
 on:
   push:
-    tags:
-      - 'V*.*.*'  # 仅匹配大写V开头的版本标签（如V1.0.0）
-  workflow_dispatch:  # 支持手动触发
+    tags: ['V*.*.*']
+  workflow_dispatch:
 
 jobs:
   release:
-    runs-on: windows-2022  # 精简matrix，直接指定Windows 2022
-    timeout-minutes: 30  # 防止构建卡死，超时终止
+    runs-on: windows-2022
+    timeout-minutes: 30
     steps:
-      # 1. 拉取代码（完整历史，Electron Builder可能需要）
-      - name: Check out code
-        uses: actions/checkout@v4  # 升级到最新版Action，更稳定
+      - name: 拉取代码（完整历史）
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 拉取完整提交记录，避免版本信息缺失
+          fetch-depth: 0  # 避免Electron Builder缺失版本信息
 
-      # 2. 配置Node.js + 国内镜像（解决依赖下载失败）
-      - name: Set up Node.js & Yarn
-        uses: actions/setup-node@v4  # 升级到最新版Action
+      - name: 配置Node.js + 国内镜像（加速依赖安装）
+        uses: actions/setup-node@v4
         with:
-          node-version: 18  # 固定Node版本（匹配Electron兼容版本）
-          cache: 'yarn'  # 缓存yarn依赖，加速构建
-          registry-url: https://registry.npmmirror.com/  # 国内镜像，避免依赖下载超时
+          node-version: 18
+          cache: 'yarn'
+          registry-url: https://registry.npmmirror.com/
 
-      # 3. 安装依赖（清理缓存+验证安装）
-      - name: Install dependencies
+      - name: 安装依赖（验证chalk是否安装）
         run: |
-          yarn cache clean  # 清除缓存，避免依赖污染
-          yarn install --frozen-lockfile  # 锁定依赖版本，确保构建一致
-          # 验证依赖安装成功（打印版本，方便排查）
-          yarn --version
-          node --version
+          # 清理缓存+重装依赖，避免缓存污染
+          yarn cache clean
+          yarn install --frozen-lockfile
+          # 验证chalk是否安装成功（提前发现问题）
+          Write-Host "=== 验证chalk依赖 ==="
+          node -e "require('chalk'); Write-Host '✅ chalk安装成功'" 2>&1 || (Write-Host '❌ chalk安装失败'; exit 1)
 
-      # 4. 构建+发布（修复TOKEN权限+输出详细日志）
-      - name: Build Electron app & publish to Releases
+      - name: 分步执行构建（精准定位失败环节）
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 修复大小写：官方默认大写TOKEN
-          ELECTRON_BUILDER_PLATFORM: win32  # 强制指定Windows平台
-          ELECTRON_BUILDER_ARCH: x64  # 强制64位构建
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 修复TOKEN大小写（关键）
+          ELECTRON_BUILDER_PLATFORM: win32
         run: |
-          # 执行构建+发布，输出详细日志（关键：排查失败原因）
-          yarn build --publish always
-          # 打印产物目录（核心：确认是否生成文件）
-          echo "=== 构建产物目录检查 ==="
-          if (Test-Path "dist") { Get-ChildItem "dist" -Recurse } else { echo "dist目录不存在" }
-          if (Test-Path "release") { Get-ChildItem "release" -Recurse } else { echo "release目录不存在" }
+          Write-Host "=== 第一步：执行build.js脚本 ==="
+          # 单独执行build.js，输出详细错误
+          node scripts/build.js 2>&1
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "❌ build.js执行失败，退出码：$LASTEXITCODE"
+              exit $LASTEXITCODE
+          }
 
-      # 5. 上传Artifacts（兜底：即使Releases发布失败，也能下载产物）
-      - name: Upload build artifacts (fallback)
+          Write-Host "=== 第二步：执行electron-builder打包 ==="
+          electron-builder --publish always --win --x64 2>&1
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "❌ electron-builder打包失败，退出码：$LASTEXITCODE"
+              exit $LASTEXITCODE
+          }
+
+      - name: 检查产物目录
+        run: |
+          Write-Host "=== 构建产物目录检查 ==="
+          if (Test-Path "dist") { Get-ChildItem "dist" -Recurse } else { Write-Host "⚠️ dist目录不存在" }
+          if (Test-Path "release") { Get-ChildItem "release" -Recurse } else { Write-Host "⚠️ release目录不存在" }
+
+      - name: 上传产物/日志（失败也上传，方便排查）
         uses: actions/upload-artifact@v4
-        if: always()  # 无论构建/发布成功与否，都上传
+        if: always()  # 无论成功/失败都执行
         with:
-          name: douyu-keep-windows-${{ github.ref_name }}  # 产物名带版本（如V1.0.0）
+          name: douyu-keep-build-${{ github.ref_name }}
           path: |
-            dist/**/*  # Electron Builder默认产物目录
-            release/**/*  # 兼容部分项目的产物目录
-            !**/node_modules/  # 排除无用依赖，减小体积
-          retention-days: 30  # 产物保留30天
+            dist/**/*
+            release/**/*
+            node_modules/**/*.log  # 上传日志文件
+          retention-days: 7
