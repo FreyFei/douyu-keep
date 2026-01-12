@@ -32,3 +32,19 @@ jobs:
         run: |
           yarn install
           yarn build --publish always
+      # 放在 Build & publish 步骤之后（或构建步骤之后）
+      - name: Upload Electron build artifacts
+        uses: actions/upload-artifact@v4  # 官方上传 Action（v4 是最新稳定版）
+        with:
+          # 1. 自定义 Artifacts 名称（区分系统/版本）
+          name: douyu-keep-windows-build
+          # 2. 要上传的路径（Electron 构建产物通常在 dist/ 目录）
+          # 支持格式：单目录、多目录、通配符、排除文件
+          path: |
+            dist/  # 上传 dist 目录下所有文件（含子目录）
+            # 可选：指定单个文件，如 dist/*.exe
+            # 可选：排除文件，如 !dist/unwanted/*（v4 需配合通配符）
+          # 3. 保留天数（可选，默认 90 天，按需缩短）
+          retention-days: 30
+          # 4. 无文件时仅警告（避免构建失败但无产物时中断流程）
+          if-no-files-found: warn
